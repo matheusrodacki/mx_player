@@ -14,6 +14,12 @@ winres = "0.1"
 # --- AS TRAVAS DE SEGURANÇA ---
 # O operador "=" proíbe atualizações automáticas que podem quebrar o build.
 
+# Reprodução de vídeo via libmpv (binários MinGW compatíveis com Win7)
+# Requer: MPV_LIB_PATH apontando para diretório com libmpv.dll.a + mpv-1.dll
+# Download: https://sourceforge.net/projects/mpv-player-windows/files/libmpv/
+# Verificar que binários são MinGW (msvcrt) e NÃO dependem de ucrt (Win8+)
+libmpv = { version = "=2.0.1", default-features = false }
+
 # Interface Gráfica (estável para Win7 com OpenGL — sem wgpu/DirectX 12)
 eframe = { version = "=0.24.1", default-features = false, features = ["default_fonts", "glow", "persistence"] }
 egui = "=0.24.1"
@@ -44,13 +50,19 @@ anyhow = "=1.0.75"
 log = "=0.4.20"
 env_logger = "=0.10.1"
 
+[dev-dependencies]
+tempfile = "=3.8.1"
+
 # --- Travas de transitivos conhecidos por quebrar com versões novas ---
 idna = "=0.4.0"
 url = "=2.4.1"
 
 # Fix para Win7 — winapi com features mínimas necessárias
 [target.'cfg(windows)'.dependencies]
-winapi = { version = "0.3.9", features = ["winuser", "windef"] }
+# winuser/windef: janelas e mensagens; libloaderapi: GetModuleHandleW para filho MPV
+winapi = { version = "0.3.9", features = ["winuser", "windef", "libloaderapi"] }
+# raw-window-handle: obter HWND da janela egui para passar ao MPV (wid)
+raw-window-handle = "=0.5.2"
 
 [profile.release]
 strip = true

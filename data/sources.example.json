@@ -1,0 +1,42 @@
+[
+  {
+    "name": "Canal SP - HD",
+    "primary_url": "http://stream1.example.com/hls/sp_hd.m3u8",
+    "secondary_url": "http://backup1.example.com/hls/sp_hd.m3u8",
+    "ip_address": "192.168.1.10",
+    "status": "unknown",
+    "last_checked": null
+  },
+  {
+    "name": "Canal RJ - SD",
+    "primary_url": "http://stream2.example.com/hls/rj_sd.m3u8",
+    "secondary_url": null,
+    "ip_address": "192.168.1.20",
+    "status": "unknown",
+    "last_checked": null
+  },
+  {
+    "name": "Canal MG - FHD",
+    "primary_url": "http://stream3.example.com/hls/mg_fhd.m3u8",
+    "secondary_url": "http://backup3.example.com/hls/mg_fhd.m3u8",
+    "ip_address": "10.0.0.5",
+    "status": "unknown",
+    "last_checked": null
+  },
+  {
+    "name": "Canal RS - HD",
+    "primary_url": "http://cdn.example.com:8080/live/rs_hd.m3u8",
+    "secondary_url": null,
+    "ip_address": null,
+    "status": "unknown",
+    "last_checked": null
+  },
+  {
+    "name": "Canal BA - SD",
+    "primary_url": "http://stream5.example.com/hls/ba_sd.m3u8",
+    "secondary_url": "http://failover5.example.com/hls/ba_sd.m3u8",
+    "ip_address": "172.16.0.50",
+    "status": "unknown",
+    "last_checked": null
+  }
+]

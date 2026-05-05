@@ -1,0 +1,17 @@
+/target/
+Cargo.lock
+
+# Dados locais (não versionar sources reais)
+data/sources.csv
+data/sources.json
+data/state.json
+*.log
+
+# Build artifacts Windows
+*.exe
+*.pdb
+*.dll
+
+# Ambiente
+.env
+scripts/*.local.ps1

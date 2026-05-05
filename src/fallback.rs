@@ -274,4 +274,127 @@ mod tests {
         assert_eq!(next_url(&node, 0), Some("http://primary.example.com/s.m3u8"));
         assert_eq!(next_url(&node, 1), None);
     }
+
+    // --- Estabilidade: transições de status ---
+
+    #[test]
+    fn status_full_cycle_through_all_states() {
+        // Verifica que um node percorre todos os estados possíveis conforme
+        // o número de tentativas avança e consegue se recuperar.
+        let mut node = make_node(
+            "http://primary.example.com/s.m3u8",
+            Some("http://secondary.example.com/s.m3u8"),
+        );
+
+        assert_eq!(node.status, NodeStatus::Unknown);
+
+        update_status(&mut node, 0);
+        assert_eq!(node.status, NodeStatus::Online);
+
+        update_status(&mut node, 1);
+        assert_eq!(node.status, NodeStatus::Degraded);
+
+        update_status(&mut node, 2);
+        assert_eq!(node.status, NodeStatus::Offline);
+
+        // Recuperação — volta para Online
+        update_status(&mut node, 0);
+        assert_eq!(node.status, NodeStatus::Online);
+    }
+
+    #[test]
+    fn next_url_deterministic_for_same_attempt() {
+        // Chamar next_url repetidamente com o mesmo attempt retorna sempre
+        // o mesmo resultado — sem estado interno modificado.
+        let node = make_node(
+            "http://primary.example.com/s.m3u8",
+            Some("http://secondary.example.com/s.m3u8"),
+        );
+
+        for _ in 0..100 {
+            assert_eq!(next_url(&node, 0), Some("http://primary.example.com/s.m3u8"));
+            assert_eq!(next_url(&node, 1), Some("http://secondary.example.com/s.m3u8"));
+            assert_eq!(next_url(&node, 2), None);
+        }
+    }
+
+    #[test]
+    fn multiple_nodes_independent_status_tracking() {
+        // Status de um node não deve afetar outro — sem estado global compartilhado.
+        let mut node_a = make_node("http://a.example.com/s.m3u8", None);
+        let mut node_b =
+            make_node("http://b.example.com/s.m3u8", Some("http://b2.example.com/s.m3u8"));
+
+        update_status(&mut node_a, 2); // Offline
+        update_status(&mut node_b, 0); // Online
+
+        assert_eq!(node_a.status, NodeStatus::Offline);
+        assert_eq!(node_b.status, NodeStatus::Online);
+
+        // Alterar node_a não afeta node_b
+        update_status(&mut node_a, 0);
+        assert_eq!(node_a.status, NodeStatus::Online);
+        assert_eq!(node_b.status, NodeStatus::Online);
+    }
+
+    #[test]
+    fn next_url_does_not_mutate_node() {
+        // next_url recebe referência imutável — o node não deve ser alterado.
+        let node = make_node(
+            "http://primary.example.com/s.m3u8",
+            Some("http://secondary.example.com/s.m3u8"),
+        );
+        let original_name = node.name.clone();
+        let original_primary = node.primary_url.clone();
+        let original_secondary = node.secondary_url.clone();
+
+        let _ = next_url(&node, 0);
+        let _ = next_url(&node, 1);
+        let _ = next_url(&node, 2);
+
+        assert_eq!(node.name, original_name);
+        assert_eq!(node.primary_url, original_primary);
+        assert_eq!(node.secondary_url, original_secondary);
+    }
+
+    #[test]
+    fn update_status_idempotent_for_same_attempt() {
+        // Chamar update_status repetidas vezes com o mesmo attempt = mesmo resultado.
+        let mut node = make_node("http://primary.example.com/s.m3u8", None);
+
+        for _ in 0..5 {
+            update_status(&mut node, 1);
+            assert_eq!(node.status, NodeStatus::Degraded);
+        }
+    }
+
+    #[test]
+    fn fallback_large_attempt_numbers_are_offline() {
+        // Números de tentativa muito altos (ex: overflow improvável) → Offline.
+        let mut node = make_node(
+            "http://primary.example.com/s.m3u8",
+            Some("http://secondary.example.com/s.m3u8"),
+        );
+        for attempt in [3usize, 10, 100, usize::MAX / 2] {
+            update_status(&mut node, attempt);
+            assert_eq!(
+                node.status,
+                NodeStatus::Offline,
+                "attempt={} deve resultar em Offline",
+                attempt
+            );
+        }
+    }
+
+    #[test]
+    fn next_url_special_characters_in_url() {
+        // URLs com caracteres especiais (query strings, hashes) não devem ser
+        // truncadas ou modificadas.
+        let primary = "http://cdn.example.com/live/stream.m3u8?token=abc123&quality=high";
+        let secondary = "http://backup.example.com/live/stream.m3u8?t=xyz&q=low#segment";
+        let node = make_node(primary, Some(secondary));
+
+        assert_eq!(next_url(&node, 0), Some(primary));
+        assert_eq!(next_url(&node, 1), Some(secondary));
+    }
 }

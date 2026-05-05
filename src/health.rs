@@ -65,12 +65,28 @@ impl HealthService {
     /// Executa o loop de health check **bloqueando** a thread atual.
     ///
     /// Chame a partir de uma thread dedicada via `std::thread::spawn`.
-    /// O loop termina quando o canal de disparo é desconectado (drop do `SyncSender`).
+    /// O loop termina quando o canal de disparo é desconectado (todos os
+    /// `SyncSender` externos foram dropados).
+    ///
+    /// **Nota:** `trigger_tx` interno é descartado no início de `run()`, de forma
+    /// que apenas os clones externos (retornados por `trigger_sender()`) controlam
+    /// o ciclo de vida do canal.
     ///
     /// A primeira varredura ocorre imediatamente ao iniciar. As varreduras
     /// subsequentes ocorrem a cada `interval_secs` segundos ou quando um disparo
     /// manual é recebido.
     pub fn run(self, interval_secs: u64) {
+        // Desestrutura e descarta trigger_tx para que o loop termine quando todos
+        // os clones externos forem dropados.
+        let HealthService {
+            nodes,
+            trigger_rx,
+            trigger_tx,
+        } = self;
+        // Drop explícito: garante que apenas os SyncSenders externos controlam
+        // o ciclo de vida do canal de disparo.
+        drop(trigger_tx);
+
         let interval = Duration::from_secs(interval_secs);
         // Executa imediatamente na primeira iteração.
         let mut next_check = Instant::now();
@@ -82,8 +98,8 @@ impl HealthService {
 
         loop {
             if Instant::now() >= next_check {
-                scan_all_safe(&self.nodes);
-                save_state(&self.nodes);
+                scan_all_safe(&nodes);
+                save_state(&nodes);
                 next_check = Instant::now() + interval;
             }
 
@@ -92,11 +108,11 @@ impl HealthService {
             // Limite de 1s para o timeout permitir checagem de condição no topo do loop.
             let wait = remaining.min(Duration::from_secs(1));
 
-            match self.trigger_rx.recv_timeout(wait) {
+            match trigger_rx.recv_timeout(wait) {
                 Ok(()) => {
                     log::info!("[health] Varredura manual disparada.");
-                    scan_all_safe(&self.nodes);
-                    save_state(&self.nodes);
+                    scan_all_safe(&nodes);
+                    save_state(&nodes);
                     next_check = Instant::now() + interval;
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
@@ -507,5 +523,153 @@ mod tests {
         // Aguarda a thread encerrar em até 2s
         let result = handle.join();
         assert!(result.is_ok(), "thread não deve entrar em pânico");
+    }
+
+    // ------------------------------------------------------------------
+    // Estabilidade — acesso concorrente e múltiplos nodes
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn apply_saved_state_all_nodes_updated() {
+        // Todos os nodes que têm correspondência devem ser atualizados.
+        let ts = chrono::Utc::now();
+        let mut nodes = vec![
+            StreamNode { name: "Node 1".to_string(), status: NodeStatus::Unknown, ..Default::default() },
+            StreamNode { name: "Node 2".to_string(), status: NodeStatus::Unknown, ..Default::default() },
+            StreamNode { name: "Node 3".to_string(), status: NodeStatus::Unknown, ..Default::default() },
+        ];
+        let saved = vec![
+            StreamNode { name: "Node 1".to_string(), status: NodeStatus::Online, last_checked: Some(ts), ..Default::default() },
+            StreamNode { name: "Node 2".to_string(), status: NodeStatus::Degraded, last_checked: Some(ts), ..Default::default() },
+            StreamNode { name: "Node 3".to_string(), status: NodeStatus::Offline, last_checked: Some(ts), ..Default::default() },
+        ];
+
+        apply_saved_state(&mut nodes, &saved);
+
+        assert_eq!(nodes[0].status, NodeStatus::Online);
+        assert_eq!(nodes[1].status, NodeStatus::Degraded);
+        assert_eq!(nodes[2].status, NodeStatus::Offline);
+    }
+
+    #[test]
+    fn derive_status_matrix_comprehensive() {
+        // Tabela completa das combinações de primary_ok × secondary_ok × tcp_ok.
+        let cases: Vec<(bool, Option<bool>, bool, NodeStatus)> = vec![
+            (true,  None,        true,  NodeStatus::Online),
+            (true,  None,        false, NodeStatus::Degraded),
+            (true,  Some(true),  true,  NodeStatus::Online),
+            (true,  Some(false), true,  NodeStatus::Online),
+            (true,  Some(true),  false, NodeStatus::Degraded),
+            (false, None,        true,  NodeStatus::Offline),
+            (false, None,        false, NodeStatus::Offline),
+            (false, Some(true),  true,  NodeStatus::Degraded),
+            (false, Some(true),  false, NodeStatus::Degraded),
+            (false, Some(false), true,  NodeStatus::Offline),
+            (false, Some(false), false, NodeStatus::Offline),
+        ];
+
+        for (primary, secondary, tcp, expected) in cases {
+            let result = derive_status(primary, secondary, tcp);
+            assert_eq!(
+                result, expected,
+                "primary={} secondary={:?} tcp={} → esperado {:?}, obtido {:?}",
+                primary, secondary, tcp, expected, result
+            );
+        }
+    }
+
+    #[test]
+    fn arc_mutex_state_concurrent_reads_safe() {
+        // Múltiplas threads lendo o estado compartilhado simultaneamente
+        // não devem gerar pânico nem deadlock.
+        use std::thread;
+
+        let nodes: Arc<Mutex<Vec<StreamNode>>> = Arc::new(Mutex::new(vec![
+            StreamNode {
+                name: "Canal 1".to_string(),
+                primary_url: "http://a.example.com/s.m3u8".to_string(),
+                status: NodeStatus::Online,
+                ..Default::default()
+            },
+        ]));
+
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                let shared = nodes.clone();
+                thread::spawn(move || {
+                    for _ in 0..50 {
+                        let lock = shared.lock().unwrap();
+                        let _ = lock.len();
+                    }
+                })
+            })
+            .collect();
+
+        for t in threads {
+            t.join().expect("thread de leitura não deve entrar em pânico");
+        }
+    }
+
+    #[test]
+    fn health_service_multiple_trigger_senders() {
+        // Múltiplos clones do trigger_sender devem funcionar corretamente.
+        let nodes: Arc<Mutex<Vec<StreamNode>>> = Arc::new(Mutex::new(Vec::new()));
+        let svc = HealthService::new(nodes);
+        let t1 = svc.trigger_sender();
+        let t2 = svc.trigger_sender();
+        let t3 = t1.clone();
+
+        // Ao menos o primeiro envio deve caber no buffer (capacidade 1).
+        assert!(t1.try_send(()).is_ok());
+        // Clones adicionais não devem entrar em pânico ao tentar enviar.
+        let _ = t2.try_send(());
+        let _ = t3.try_send(());
+    }
+
+    #[test]
+    fn apply_saved_state_empty_saved_preserves_nodes() {
+        // Aplicar lista vazia de saved não deve alterar nenhum node.
+        let mut nodes = vec![
+            StreamNode { name: "Canal A".to_string(), status: NodeStatus::Online, ..Default::default() },
+            StreamNode { name: "Canal B".to_string(), status: NodeStatus::Degraded, ..Default::default() },
+        ];
+
+        apply_saved_state(&mut nodes, &[]);
+
+        assert_eq!(nodes[0].status, NodeStatus::Online);
+        assert_eq!(nodes[1].status, NodeStatus::Degraded);
+    }
+
+    #[test]
+    fn apply_saved_state_empty_nodes_is_noop() {
+        // Aplicar sobre lista vazia de nodes não deve entrar em pânico.
+        let mut nodes: Vec<StreamNode> = Vec::new();
+        let saved = vec![
+            StreamNode { name: "Canal X".to_string(), status: NodeStatus::Online, ..Default::default() },
+        ];
+        apply_saved_state(&mut nodes, &saved);
+        assert!(nodes.is_empty());
+    }
+
+    #[test]
+    fn save_load_state_preserves_all_statuses() {
+        // Roundtrip JSON preserva todos os NodeStatus possíveis.
+        use tempfile::NamedTempFile;
+        let ts = chrono::Utc::now();
+        let original = vec![
+            StreamNode { name: "Online".to_string(), primary_url: "http://a.example.com/".to_string(), status: NodeStatus::Online, last_checked: Some(ts), ..Default::default() },
+            StreamNode { name: "Degraded".to_string(), primary_url: "http://b.example.com/".to_string(), status: NodeStatus::Degraded, last_checked: Some(ts), ..Default::default() },
+            StreamNode { name: "Offline".to_string(), primary_url: "http://c.example.com/".to_string(), status: NodeStatus::Offline, last_checked: None, ..Default::default() },
+            StreamNode { name: "Unknown".to_string(), primary_url: "http://d.example.com/".to_string(), status: NodeStatus::Unknown, last_checked: None, ..Default::default() },
+        ];
+
+        let tmp = NamedTempFile::new().unwrap();
+        store::save_to_json(tmp.path(), &original).unwrap();
+        let loaded = store::load_from_json(tmp.path()).unwrap();
+
+        assert_eq!(loaded[0].status, NodeStatus::Online);
+        assert_eq!(loaded[1].status, NodeStatus::Degraded);
+        assert_eq!(loaded[2].status, NodeStatus::Offline);
+        assert_eq!(loaded[3].status, NodeStatus::Unknown);
     }
 }

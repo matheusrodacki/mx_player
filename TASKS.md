@@ -142,9 +142,9 @@ Tarefas organizadas por fase conforme o PRD. Marque com `[x]` ao concluir.
 
 ## Dependências Bloqueantes
 
-| Task | Depende de | Risco |
-|------|-----------|-------|
-| T07–T09 | T01 (libmpv no Win7) | **Alto** — libmpv requer DLL externa; Win7 pode precisar de versão antiga do mpv |
-| T16 | T15 (decisão de render) | Médio — Opção B é complexa mas mais integrada |
-| T23–T26 | T02 (tokio Win7) | Médio — se tokio 1.14 não funcionar, migrar health check para threads nativas |
-| T34 | T22, T33 | Baixo — validação final |
+| Task    | Depende de              | Risco                                                                            |
+| ------- | ----------------------- | -------------------------------------------------------------------------------- |
+| T07–T09 | T01 (libmpv no Win7)    | **Alto** — libmpv requer DLL externa; Win7 pode precisar de versão antiga do mpv |
+| T16     | T15 (decisão de render) | Médio — Opção B é complexa mas mais integrada                                    |
+| T23–T26 | T02 (tokio Win7)        | Médio — se tokio 1.14 não funcionar, migrar health check para threads nativas    |
+| T34     | T22, T33                | Baixo — validação final                                                          |
